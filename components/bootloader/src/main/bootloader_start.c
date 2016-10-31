@@ -22,6 +22,7 @@
 #include "rom/ets_sys.h"
 #include "rom/spi_flash.h"
 #include "rom/crc.h"
+#include "rom/rtc.h"
 
 #include "soc/soc.h"
 #include "soc/cpu.h"
@@ -57,6 +58,7 @@ void IRAM_ATTR set_cache_and_start_app(uint32_t drom_addr,
     uint32_t irom_load_addr,
     uint32_t irom_size,
     uint32_t entry_addr);
+static void update_flash_config(struct flash_hdr* pfhdr);
 
 
 void IRAM_ATTR call_start_cpu0()
@@ -257,7 +259,7 @@ void bootloader_main()
     memset(&bs, 0, sizeof(bs));
 
     ESP_LOGI(TAG, "compile time " __TIME__ );
-    /* close watch dog here */
+    /* disable watch dog here */
     REG_CLR_BIT( RTC_CNTL_WDTCONFIG0_REG, RTC_CNTL_WDT_FLASHBOOT_MOD_EN );
     REG_CLR_BIT( TIMG_WDTCONFIG0_REG(0), TIMG_WDT_FLASHBOOT_MOD_EN );
     SPIUnlock();
@@ -267,6 +269,8 @@ void bootloader_main()
     memcpy((unsigned int *) &fhdr, MEM_CACHE(0x1000), sizeof(struct flash_hdr) );
 
     print_flash_info(&fhdr);
+
+    update_flash_config(&fhdr);
 
     if (!load_partition_table(&bs, PARTITION_ADD)) {
         ESP_LOGE(TAG, "load partition table error!");
@@ -362,11 +366,15 @@ void unpack_load_app(const partition_pos_t* partition)
     uint32_t irom_load_addr = 0;
     uint32_t irom_size = 0;
 
+    /* Reload the RTC memory sections whenever a non-deepsleep reset
+       is occurring */
+    bool load_rtc_memory = rtc_get_reset_reason(0) != DEEPSLEEP_RESET;
+
     ESP_LOGD(TAG, "bin_header: %u %u %u %u %08x", image_header.magic,
-              image_header.blocks,
-              image_header.spi_mode,
-              image_header.spi_size,
-              (unsigned)image_header.entry_addr);
+             image_header.blocks,
+             image_header.spi_mode,
+             image_header.spi_size,
+             (unsigned)image_header.entry_addr);
 
     for (uint32_t section_index = 0;
             section_index < image_header.blocks;
@@ -406,7 +414,18 @@ void unpack_load_app(const partition_pos_t* partition)
             map = true;
         }
 
-        ESP_LOGI(TAG, "section %d: paddr=0x%08x vaddr=0x%08x size=0x%05x (%6d) %s", section_index, pos, section_header.load_addr, section_header.data_len, section_header.data_len, (load)?"load":(map)?"map":"");
+        if (!load_rtc_memory && address >= RTC_IRAM_LOW && address < RTC_IRAM_HIGH) {
+            ESP_LOGD(TAG, "Skipping RTC code section at %08x\n", pos);
+            load = false;
+        }
+
+        if (!load_rtc_memory && address >= RTC_DATA_LOW && address < RTC_DATA_HIGH) {
+            ESP_LOGD(TAG, "Skipping RTC data section at %08x\n", pos);
+            load = false;
+        }
+
+        ESP_LOGI(TAG, "section %d: paddr=0x%08x vaddr=0x%08x size=0x%05x (%6d) %s", section_index, pos,
+                 section_header.load_addr, section_header.data_len, section_header.data_len, (load)?"load":(map)?"map":"");
 
         if (!load) {
             pos += section_header.data_len;
@@ -466,6 +485,36 @@ void IRAM_ATTR set_cache_and_start_app(
     (*entry)();
 }
 
+static void update_flash_config(struct flash_hdr* pfhdr)
+{
+    uint32_t size;
+    switch(pfhdr->spi_size) {
+        case SPI_SIZE_1MB:
+            size = 1;
+            break;
+        case SPI_SIZE_2MB:
+            size = 2;
+            break;
+        case SPI_SIZE_4MB:
+            size = 4;
+            break;
+        case SPI_SIZE_8MB:
+            size = 8;
+            break;
+        case SPI_SIZE_16MB:
+            size = 16;
+            break;
+        default:
+            size = 2;
+    }
+    Cache_Read_Disable( 0 );
+    // Set flash chip size
+    SPIParamCfg(g_rom_flashchip.deviceId, size * 0x100000, 0x10000, 0x1000, 0x100, 0xffff);
+    // TODO: set mode
+    // TODO: set frequency
+    Cache_Flush(0);
+    Cache_Read_Enable( 0 );
+}
 
 void print_flash_info(struct flash_hdr* pfhdr)
 {

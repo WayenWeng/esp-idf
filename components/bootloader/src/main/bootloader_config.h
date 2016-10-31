@@ -30,6 +30,10 @@ extern "C"
 #define IROM_HIGH   0x40400000
 #define DROM_LOW    0x3F400000
 #define DROM_HIGH   0x3F800000
+#define RTC_IRAM_LOW  0x400C0000
+#define RTC_IRAM_HIGH 0x400C2000
+#define RTC_DATA_LOW  0x50000000
+#define RTC_DATA_HIGH 0x50002000
 
 /*spi mode,saved in third byte in flash */
 enum {
@@ -47,7 +51,7 @@ enum {
     SPI_SPEED_20M,
     SPI_SPEED_80M = 0xF
 };
-/*suppport flash size in esp32 */
+/*supported flash sizes*/
 enum {
     SPI_SIZE_1MB = 0,
     SPI_SIZE_2MB,
